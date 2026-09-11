@@ -48,7 +48,9 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
-module = ["bs4.*"]
+# bs4 ships no inline types; playwright is an optional extra (domxss module)
+# and is usually absent in lint environments
+module = ["bs4.*", "playwright.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
