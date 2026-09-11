@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: pip install ruff mypy types-requests
+      - name: Ruff
+        run: ruff check scanner tests scripts
+      - name: Mypy
+        run: mypy
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Run tests
+        run: python -m pytest
+      - name: Smoke-test the CLI
+        run: |
+          python -m scanner --version
+          python tests/vulnapp.py &
+          sleep 1
+          set +e
+          python -m scanner -u http://127.0.0.1:8099/ --allow-private \
+            --fail-on critical --format json --sarif out.sarif > scan.json
+          rc=$?
+          set -e
+          # the vuln app contains a critical finding, so the gate must fire
+          [ "$rc" -eq 1 ]
+          python - <<'EOF'
+          import json
+          data = json.load(open("scan.json"))
+          assert data["findings"], "expected findings from the bundled vuln app"
+          severities = {f["severity"] for f in data["findings"]}
+          assert "critical" in severities, severities
+          sarif = json.load(open("out.sarif"))
+          assert sarif["version"] == "2.1.0"
+          assert len(sarif["runs"][0]["results"]) == len(data["findings"])
+          print("smoke test ok:", data["meta"]["severity_counts"])
+          EOF
