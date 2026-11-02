@@ -56,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--depth", type=int, default=2, help="crawl depth (default: 2)")
     parser.add_argument("--max-pages", type=int, default=30, help="max pages to crawl (default: 30)")
     parser.add_argument("-t", "--threads", type=int, default=4, help="worker threads (default: 4)")
+    parser.add_argument("--batch-threads", type=int, default=2, metavar="N",
+                        help="concurrent targets in batch mode (default: 2); each target "
+                             "keeps its own rate limiting, so this multiplies total load")
     parser.add_argument("--delay", type=float, default=0.0,
                         help="minimum delay between requests in seconds (default: 0)")
     parser.add_argument("--timeout", type=float, default=10.0, help="per-request timeout (default: 10s)")
@@ -270,40 +273,59 @@ def _run_batch(args, log) -> int:
 
     machine_mode = args.format == "json"
     if not machine_mode:
-        print(f"[*] Batch scan: {len(targets)} target(s)")
+        print(f"[*] Batch scan: {len(targets)} target(s), "
+              f"{min(args.batch_threads, len(targets))} concurrent")
 
     config = _build_config(args)
-    results = []
+    results_by_index: dict = {}
     failures = 0
-    for index, url in enumerate(targets, 1):
-        if not machine_mode:
-            print(f"\n=== [{index}/{len(targets)}] {url} ===")
-        try:
-            result = Scanner(config).run(url, log=log)
-        except GuardBlocked as exc:
-            log(f"[!] {url}: blocked by the network guard ({exc.reason})")
-            failures += 1
-            continue
-        except KeyboardInterrupt:
-            print("\n[!] Interrupted by user")
-            return 130
-        except (ValueError, OSError) as exc:
-            log(f"[!] {url}: {exc.__class__.__name__}: {exc}")
-            failures += 1
-            continue
+    failure_lock_rows: list = []
 
-        results.append(result)
-        if not args.no_report:
-            html_path, json_path = default_report_paths(result)
-            for path in write_reports(result, html_path, json_path):
-                log(f"[+] Report written: {path}")
-        if not machine_mode:
-            counts = result.severity_counts
-            chips = " ".join(f"{SEVERITY_LABELS_EN[s]}:{counts[s]}"
-                             for s in ("critical", "high", "medium", "low", "info")
-                             if counts.get(s))
-            print(f"    -> {len(result.findings)} finding(s)"
-                  + (f" [{chips}]" if chips else ""))
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def scan_one(index: int, url: str):
+        prefix = url.split("//", 1)[-1].split("/")[0][:32]
+        target_log = (lambda *_a, **_k: None) if machine_mode \
+            else (lambda msg, _p=prefix: print(f"[{_p}] {msg}"))
+        result = Scanner(config).run(url, log=target_log)
+        return index, url, result
+
+    with ThreadPoolExecutor(max_workers=max(1, args.batch_threads)) as executor:
+        futures = {executor.submit(scan_one, i, url): (i, url)
+                   for i, url in enumerate(targets)}
+        for future in as_completed(futures):
+            index, url = futures[future]
+            try:
+                _, _, result = future.result()
+            except GuardBlocked as exc:
+                failure_lock_rows.append(f"[!] {url}: blocked by the network guard ({exc.reason})")
+                continue
+            except KeyboardInterrupt:
+                print("\n[!] Interrupted by user")
+                return 130
+            except (ValueError, OSError) as exc:
+                failure_lock_rows.append(f"[!] {url}: {exc.__class__.__name__}: {exc}")
+                continue
+
+            results_by_index[index] = result
+            if not args.no_report:
+                html_path, json_path = default_report_paths(result)
+                for path in write_reports(result, html_path, json_path):
+                    if not machine_mode:
+                        print(f"[+] Report written: {path}")
+            if not machine_mode:
+                counts = result.severity_counts
+                chips = " ".join(f"{SEVERITY_LABELS_EN[s]}:{counts[s]}"
+                                 for s in ("critical", "high", "medium", "low", "info")
+                                 if counts.get(s))
+                print(f"=== [{index + 1}/{len(targets)}] {url}: "
+                      f"{len(result.findings)} finding(s)"
+                      + (f" [{chips}]" if chips else ""))
+
+    for row in failure_lock_rows:
+        log(row)
+    failures = len(failure_lock_rows)
+    results = [results_by_index[i] for i in sorted(results_by_index)]
 
     if machine_mode:
         print(render_batch_json(results))

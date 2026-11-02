@@ -53,6 +53,19 @@ def test_batch_empty_file_is_error(tmp_path):
     assert rc == 2
 
 
+def test_batch_concurrent_targets(app_url, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    targets = tmp_path / "targets.txt"
+    targets.write_text(f"{app_url}\n{app_url}slow1\n", encoding="utf-8")
+    rc = cli.main(["--targets", str(targets), "--allow-private",
+                   "--modules", "headers", "--batch-threads", "2",
+                   "--format", "json", "--no-report"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["meta"]["targets"] == 2
+    assert len(data["targets"]) == 2
+
+
 def test_url_and_targets_are_mutually_exclusive(app_url, tmp_path):
     targets = tmp_path / "targets.txt"
     targets.write_text(f"{app_url}\n", encoding="utf-8")

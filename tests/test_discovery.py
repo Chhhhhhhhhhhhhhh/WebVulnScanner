@@ -8,7 +8,7 @@ from scanner.scanner import ScanConfig, Scanner
 
 def _scan(app_url, modules, **overrides) -> ScanResult:
     options = dict(modules=modules, threads=4, timeout=5,
-                   allow_private=True, max_pages=25, depth=2)
+                   allow_private=True, max_pages=30, depth=2)
     options.update(overrides)
     return Scanner(ScanConfig(**options)).run(app_url, log=lambda *_: None)
 

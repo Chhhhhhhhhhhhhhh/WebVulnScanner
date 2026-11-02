@@ -114,6 +114,8 @@ class VulnHandler(BaseHTTPRequestHandler):
 <head><title>Vulnerable Test App</title></head>
 <body>
 <h1>Test Shop</h1>
+<a href="/canonical">Canonical</a>
+<a href="/login-nosql?user=demo">NoSQL login</a>
 <a href="/search?q=laptop">Search laptops</a>
 <a href="/item?id=1">Item 1</a>
 <a href="/item?id=2">Item 2</a>
@@ -129,6 +131,9 @@ class VulnHandler(BaseHTTPRequestHandler):
 <a href="/dom?name=world">DOM greet</a>
 <a href="/domsafe?name=world">DOM greet (safe)</a>
 <a href="/safe/page?id=7">Safe page</a>
+<a href="/slow/a">Slow A</a>
+<a href="/slow/b">Slow B</a>
+<a href="/slow/c">Slow C</a>
 <form action="/search" method="get">
   <input type="text" name="q" value="">
   <input type="submit" value="Search">
@@ -255,6 +260,33 @@ class VulnHandler(BaseHTTPRequestHandler):
   document.getElementById('g').textContent = 'Hello, ' + name;
 </script>
 </body></html>""")
+            return
+
+        if path == "/canonical":
+            host = self.headers.get("Host", "unknown")
+            self._send(200, f'<html><head><link rel="canonical" href="http://{host}/canonical">'
+                            f"</head><body>Canonical page</body></html>")
+            return
+
+        if path == "/login-nosql":
+            user = params.get("user", "")
+            if re.search(r"\$(ne|gt|lt|regex|where|or)\b", user):
+                self._send(200, "<html><body><pre>MongoError: unknown operator: "
+                                "BSON field '$ne' is an unknown operator</pre></body></html>")
+            else:
+                self._send(200, "<html><body><p>Invalid credentials</p></body></html>")
+            return
+
+        if path == "/slow-hub":
+            # dedicated crawl-parallelism test entry: three slow pages only
+            self._send(200, '<html><body><a href="/slow/a">A</a>'
+                            '<a href="/slow/b">B</a><a href="/slow/c">C</a>'
+                            "</body></html>")
+            return
+
+        if path.startswith("/slow/"):
+            time.sleep(0.35)             # crawl-parallelism test pages
+            self._send(200, f"<html><body><p>slow page {path}</p></body></html>")
             return
 
         if path == "/sitemap.xml":
@@ -386,6 +418,46 @@ class VulnHandler(BaseHTTPRequestHandler):
             return
 
         self._send(404, "<html><body>Not found</body></html>")
+
+    # -- verb handlers (HTTP-method module targets) -----------------------
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Allow", "GET, POST, OPTIONS, PUT, DELETE, TRACE")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_TRACE(self):
+        # classic XST behaviour: echo the request back
+        path = urlsplit(self.path).path
+        body = f"TRACE {path} HTTP/1.1\r\nHost: {self.headers.get('Host', '')}\r\n"
+        data = body.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "message/http")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_PUT(self):
+        path = urlsplit(self.path).path
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        if not hasattr(self.server, "file_store"):
+            self.server.file_store = {}
+        self.server.file_store[path] = body
+        self.send_response(201)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_DELETE(self):
+        path = urlsplit(self.path).path
+        store = getattr(self.server, "file_store", {})
+        if path in store:
+            del store[path]
+            self.send_response(204)
+        else:
+            self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
 
 def make_server(host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:

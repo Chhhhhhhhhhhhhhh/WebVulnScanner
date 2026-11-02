@@ -24,6 +24,9 @@
 | `redirect` | 开放重定向(CWE-601),带中性对照请求,固定跳 SSO 的页面不误报 |
 | `cors` | CORS 配置错误(CWE-942):反射任意 Origin(带/不带凭据)、通配符策略 |
 | `ssti` | 模板注入(CWE-1336):四种引擎语法的随机算术表达式求值判定 |
+| `methods` | 危险 HTTP 方法(CWE-749):TRACE 回显(XST)与未认证 PUT 任意写——PUT 探测会写入一个随机命名的标记文件并立即删除 |
+| `hostheader` | Host 头注入(CWE-644):伪造 Host 回显进页面/重定向(密码重置投毒、缓存投毒的原语),跨爬取页面采样 |
+| `nosqli` | 报错型 NoSQL 算子注入(CWE-943):`$ne`/`$gt`/`$regex` 载荷仅在出现 MongoDB/BSON 错误特征时报告(设计上零误报) |
 | `timing` *(选配 `--time-based`)* | 时间盲注:以响应延迟推断 SQL/命令注入,双重确认;命中的探针会真实休眠,故默认关闭 |
 | `domxss` *(选配 `-m domxss`)* | 真浏览器确认的 DOM XSS:金丝雀参数 + sink 补丁。需 `pip install "webvulnscanner[dom]" && playwright install chromium` |
 
@@ -82,7 +85,7 @@ python -m scanner -u http://127.0.0.1:8099/ --allow-private
 ## 运行测试
 
 ```bash
-pip install "webvulnscanner[dev]" && python -m pytest    # 104 个用例全部通过
+pip install "webvulnscanner[dev]" && python -m pytest    # 114 个用例全部通过
 ```
 
 浏览器版 DOM XSS 测试在安装了 playwright 时运行,否则自动跳过。

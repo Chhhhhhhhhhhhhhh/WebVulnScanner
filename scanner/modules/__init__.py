@@ -8,7 +8,10 @@ from .cors import CorsModule
 from .domxss import DomXssModule
 from .fingerprint import FingerprintModule
 from .headers import HeadersModule
+from .hostheader import HostHeaderModule
 from .lfi import LfiModule
+from .methods import MethodsModule
+from .nosqli import NoSqlModule
 from .redirect import RedirectModule
 from .sensitive import SensitiveModule
 from .sqli import SqliModule
@@ -27,6 +30,9 @@ MODULES = {
     RedirectModule.id: RedirectModule,
     CorsModule.id: CorsModule,
     SstiModule.id: SstiModule,
+    MethodsModule.id: MethodsModule,
+    HostHeaderModule.id: HostHeaderModule,
+    NoSqlModule.id: NoSqlModule,
     # opt-in modules: slower or require extra setup, never in the default set
     TimingModule.id: TimingModule,
     DomXssModule.id: DomXssModule,

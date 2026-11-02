@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.4.0 (2026-11)
+
+Performance and three more detection modules.
+
+### Changed (performance)
+- **Crawler fetches pages layer-by-layer in parallel** (up to `--threads`
+  concurrent requests within one BFS depth). Depth semantics, page budget,
+  logout avoidance and the global rate limiter are unchanged; a dedicated
+  test asserts the parallel crawl discovers the same page/param/form set
+  as the serial one and is measurably faster on slow targets.
+- **Batch mode scans targets concurrently** (`--batch-threads`, default 2).
+  Each target keeps its own rate limiting; console output is prefixed per
+  target. Note this multiplies total load across targets.
+
+### Added
+- `methods` module (CWE-749): TRACE echo detection (XST) and
+  unauthenticated PUT write probing. The PUT probe uploads one
+  uniquely-named marker file, deletes it immediately, and verifies the
+  cleanup by content (soft-404-safe), flagging leftovers separately.
+- `hostheader` module (CWE-644): spoofed `Host` reflected into response
+  bodies or `Location` headers, sampled across the entry page plus crawled
+  pages; keeps the original port so probes reach the same listener.
+- `nosqli` module (CWE-943): error-based MongoDB operator injection
+  (`$ne`/`$gt`/`$regex`/`$where` shapes). Error-signature-only by design —
+  boolean differentials on NoSQL endpoints are too noisy for a scanner
+  this size, so silent injections are a documented limitation.
+- Vuln test app: PUT/DELETE/TRACE/OPTIONS handlers with in-memory file
+  store, `/canonical` (Host reflection), `/login-nosql` (Mongo errors),
+  `/slow-hub` (crawl-parallelism test entry).
+
 ## 2.3.0 (2026-09)
 
 Daily-driver features: batch scanning, authenticated scanning, broader

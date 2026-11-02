@@ -19,7 +19,7 @@ BANNER = r"""
   \        /\  ___/|  |_(  <_> )  |_> >  |_> >/ __ \/   |  |   |  |   |  \ / __ \|   |  \
    \__/\  /  \___  >____/\____/|   __/|   __(____  /   |__|   |__|___|  (____  /___|  /
         \/       \/           |__|   |__|       \/                      \/     \/    \/
-  v2.3 — authorised security testing only
+  v2.4 — authorised security testing only
 """
 
 
@@ -129,6 +129,7 @@ class Scanner:
                 client, target,
                 max_pages=crawl_max_pages,
                 depth=crawl_depth,
+                threads=self.config.threads,
                 log=log,
             )
         except Exception as exc:  # keep the scan alive; modules handle missing data

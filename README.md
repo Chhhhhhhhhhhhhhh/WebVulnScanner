@@ -54,6 +54,9 @@ never escaped its own report. v2 is a ground-up rebuild:
 | `redirect` | Open redirects (CWE-601) with a neutral control request so pages that legitimately bounce off-site are not flagged |
 | `cors` | CORS misconfiguration (CWE-942): reflected arbitrary origins (with/without credentials) and wildcard policies |
 | `ssti` | Server-side template injection (CWE-1336) via random arithmetic expressions in four engine syntaxes |
+| `methods` | Dangerous HTTP verbs (CWE-749): TRACE echo (XST) and unauthenticated PUT writes — the PUT probe writes one uniquely-named marker file and deletes it immediately |
+| `hostheader` | Host header injection (CWE-644): spoofed `Host` reflected into bodies or redirects (reset-poisoning / cache-poisoning primitive), sampled across crawled pages |
+| `nosqli` | Error-based NoSQL operator injection (CWE-943): `$ne`/`$gt`/`$regex` payloads flagged only on MongoDB/BSON error signatures (zero-false-positive by design) |
 | `timing` *(opt-in, `--time-based`)* | Blind SQL/command injection inferred from response delays (SLEEP/pg_sleep/WAITFOR and shell `sleep`), double-confirmed; slower because winning probes really sleep |
 | `domxss` *(opt-in, `-m domxss`)* | DOM XSS confirmed in a real browser: canary parameters + patched sinks (innerHTML, document.write, eval, …). Requires `pip install "webvulnscanner[dom]" && playwright install chromium` |
 
@@ -120,7 +123,8 @@ python -m scanner -u https://target.example.com -m domxss
 | `--no-crawl` | — | Test only the given URL and its forms |
 | `--depth N` | 2 | Crawl depth |
 | `--max-pages N` | 30 | Crawl page budget |
-| `-t, --threads N` | 4 | Worker threads |
+| `-t, --threads N` | 4 | Worker threads (also the crawl fetch parallelism) |
+| `--batch-threads N` | 2 | Concurrent targets in batch mode; each target keeps its own rate limiting |
 | `--delay SEC` | 0 | Minimum delay between any two requests |
 | `--timeout SEC` | 10 | Per-request timeout |
 | `--cookie STR` | — | Cookie header for authenticated scanning |
@@ -161,7 +165,7 @@ pip install "webvulnscanner[dev]"
 python -m pytest
 ```
 
-104 tests: unit tests (URL handling, reflection analysis, echo stripping,
+114 tests: unit tests (URL handling, reflection analysis, echo stripping,
 network guard, adaptive backoff, page-equivalence calibration, report
 escaping, CLI gate/format/SARIF/diff) and end-to-end scans of the bundled
 app asserting both true positives **and** false-positive control. The

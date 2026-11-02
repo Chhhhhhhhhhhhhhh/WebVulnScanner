@@ -247,7 +247,7 @@ class HttpClient:
         url: str,
         *,
         params: dict | None = None,
-        data: dict | None = None,
+        data: dict | str | bytes | None = None,
         headers: dict | None = None,
         follow: bool | None = None,
         stream: bool = False,

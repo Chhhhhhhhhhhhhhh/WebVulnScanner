@@ -6,7 +6,11 @@ locations, and API-ish endpoints embedded in JavaScript sources — the
 crawler's job is purely to map the attack surface; vulnerability decisions
 belong to the modules.
 
-Politeness/safety details:
+Pages are fetched **layer by layer in parallel** (``threads`` concurrent
+fetches within one BFS depth), while parsing stays on the calling thread.
+The shared HttpClient's global rate limiter keeps politeness intact.
+
+Safety details:
 
 * links that look like logout endpoints are never followed (they would
   kill an authenticated session mid-scan);
@@ -18,6 +22,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
@@ -165,13 +170,18 @@ def crawl(
     *,
     max_pages: int = DEFAULT_MAX_PAGES,
     depth: int = DEFAULT_DEPTH,
+    threads: int = 4,
     log=print,
 ) -> CrawlResult:
-    """BFS-crawl ``start_url`` within the same scheme/host/port."""
+    """BFS-crawl ``start_url`` within the same scheme/host/port.
+
+    Pages of one BFS layer are fetched concurrently (up to ``threads``);
+    layer N+1 is only queued after layer N completes, preserving depth
+    semantics and the page budget.
+    """
     result = CrawlResult(entry_url=start_url)
-    queue: deque = deque([(start_url, 0)])
-    visited = {canonical(start_url)}
-    form_signatures = set()
+    queue: deque = deque()
+    form_signatures: set = set()
     js_budget = MAX_JS_FILES
 
     def enqueue(url: str, at_depth: int, is_js: bool = False) -> None:
@@ -191,6 +201,46 @@ def crawl(
             return
         visited.add(url)
         queue.append((url, at_depth))
+
+    visited = {canonical(start_url)}
+
+    def absorb(page_data: PageData, requested_url: str) -> None:
+        """Parse one fetched page on the calling thread."""
+        if _is_js(page_data.url, page_data.content_type):
+            for endpoint in extract_js_endpoints(page_data.text):
+                enqueue(urljoin(page_data.url, endpoint), current_depth + 1)
+            return
+        if not page_data.is_html:
+            return
+        for candidate in {canonical(page_data.url), canonical(requested_url)}:
+            if urlsplit(candidate).query and candidate not in result.param_urls:
+                if len(result.param_urls) < MAX_PARAM_URLS:
+                    result.param_urls.append(candidate)
+        soup = BeautifulSoup(page_data.text, "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            href = str(anchor["href"]).strip()
+            if not href or href.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+                continue
+            link = urljoin(page_data.url, href)
+            if link.lower().startswith(("http://", "https://")):
+                enqueue(link, current_depth + 1)
+        for tag in soup.find_all(["script", "iframe"], src=True):
+            src = str(tag["src"] or "").strip()
+            if src:
+                enqueue(urljoin(page_data.url, src), current_depth + 1, is_js=True)
+        for script in soup.find_all("script", src=False):
+            if script.string:
+                for endpoint in extract_js_endpoints(str(script.string)):
+                    enqueue(urljoin(page_data.url, endpoint), current_depth + 1)
+        for form in extract_forms(soup, page_data.url):
+            if form.signature not in form_signatures and len(result.forms) < MAX_FORMS:
+                form_signatures.add(form.signature)
+                result.forms.append(form)
+
+    # the entry URL must be queued FIRST so the BFS deque stays
+    # depth-ordered: robots/sitemap items enter at depth 1, after it
+    current_depth = 0
+    queue.append((canonical(start_url), 0))
 
     # robots.txt as a discovery source (also recorded for the report)
     origin = f"{urlsplit(start_url).scheme}://{urlsplit(start_url).netloc}"
@@ -217,60 +267,47 @@ def crawl(
             for inner_loc in inner_urls:
                 enqueue(urljoin(start_url, inner_loc), 1)
 
-    entry_fetch_pending = True
-    while queue and len(result.pages) < max_pages:
-        url, at_depth = queue.popleft()
-        if at_depth > depth:
-            continue
-        page = client.get_page(url)
-        if page is None:
-            continue
-        page_data = PageData(
-            url=page.url, status=page.status, headers=page.headers,
-            body=page.body, set_cookies=page.set_cookies,
-        )
-        result.pages.append(page_data)
-        if entry_fetch_pending:
-            entry_fetch_pending = False
-            result.entry = page_data
-
-        if _is_js(url, page_data.content_type):
-            for endpoint in extract_js_endpoints(page_data.text):
-                enqueue(urljoin(page.url, endpoint), at_depth + 1)
-            continue
-
-        if not page_data.is_html:
-            continue
-
-        for candidate in {canonical(page.url), canonical(url)}:
-            if urlsplit(candidate).query and candidate not in result.param_urls:
-                if len(result.param_urls) < MAX_PARAM_URLS:
-                    result.param_urls.append(candidate)
-
-        soup = BeautifulSoup(page_data.text, "html.parser")
-        for anchor in soup.find_all("a", href=True):
-            href = str(anchor["href"]).strip()
-            if not href or href.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+    # --- BFS, one layer fetched in parallel at a time --------------------
+    with ThreadPoolExecutor(max_workers=max(1, threads)) as executor:
+        while queue and len(result.pages) < max_pages:
+            # collect the whole current layer (BFS queue is depth-ordered)
+            budget = max_pages - len(result.pages)
+            batch: list = []
+            while queue and queue[0][1] == current_depth and len(batch) < budget:
+                batch.append(queue.popleft())
+            if not batch:
+                if current_depth >= depth:
+                    break               # nothing left within the depth limit
+                current_depth += 1
                 continue
-            link = urljoin(page.url, href)
-            if link.lower().startswith(("http://", "https://")):
-                enqueue(link, at_depth + 1)
+            if current_depth > depth:
+                break                   # next layer would exceed --depth
 
-        for tag in soup.find_all(["script", "iframe"], src=True):
-            src = str(tag["src"] or "").strip()
-            if src:
-                enqueue(urljoin(page.url, src), at_depth + 1, is_js=True)
+            futures = {executor.submit(client.get_page, url): url for url, _ in batch}
+            fetched: list = []
+            for future in as_completed(futures):
+                url = futures[future]
+                resp = future.result()
+                if resp is None:
+                    continue
+                fetched.append((url, PageData(
+                    url=resp.url, status=resp.status, headers=resp.headers,
+                    body=resp.body, set_cookies=resp.set_cookies,
+                )))
+            # deterministic order within the layer (matching serial crawl)
+            order = {url: i for i, (url, _) in enumerate(batch)}
+            fetched.sort(key=lambda pair: order.get(pair[0], len(order)))
+            for requested_url, page_data in fetched:
+                result.pages.append(page_data)
+                if result.entry is None and current_depth == 0:
+                    result.entry = page_data
 
-        # inline scripts can reference API endpoints just like .js files
-        for script in soup.find_all("script", src=False):
-            if script.string:
-                for endpoint in extract_js_endpoints(str(script.string)):
-                    enqueue(urljoin(page.url, endpoint), at_depth + 1)
+            # parse every fetched page: absorbing issues no requests, so the
+            # page budget only caps what we fetch, never what we parse
+            for requested_url, page_data in fetched:
+                absorb(page_data, requested_url)
 
-        for form in extract_forms(soup, page.url):
-            if form.signature not in form_signatures and len(result.forms) < MAX_FORMS:
-                form_signatures.add(form.signature)
-                result.forms.append(form)
+            current_depth += 1
 
     log(f"[*] Crawl finished: {len(result.pages)} page(s), "
         f"{len(result.param_urls)} parameterised URL(s), {len(result.forms)} form(s)")
